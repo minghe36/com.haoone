@@ -161,6 +161,48 @@ const handleRunSubtitle = async () => {
               }
             }
 
+            // Windows 路径检测
+            if (isWindows) {
+              // Windows 常见安装路径
+              var windowsPaths = [
+                "C:\\Program Files\\haoone\\haoone.exe",
+                "C:\\Program Files (x86)\\haoone\\haoone.exe"
+              ];
+
+              // 尝试常见路径
+              for (var i = 0; i < windowsPaths.length; i++) {
+                if (fileExists(windowsPaths[i])) {
+                  return { success: true, path: windowsPaths[i] };
+                }
+              }
+
+              // 尝试从 LOCALAPPDATA 获取
+              var localAppData = Folder("").fsName;
+              if (localAppData) {
+                var appDataPath = localAppData + "\\haoone\\haoone.exe";
+                if (fileExists(appDataPath)) {
+                  return { success: true, path: appDataPath };
+                }
+              }
+
+              // 遍历所有盘符查找
+              var drives = ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
+              for (var d = 0; d < drives.length; d++) {
+                var drivePaths = [
+                  drives[d] + ":\\Program Files\\haoone\\haoone.exe",
+                  drives[d] + ":\\Program Files (x86)\\haoone\\haoone.exe",
+                  drives[d] + ":\\haoone\\haoone.exe"
+                ];
+                for (var p = 0; p < drivePaths.length; p++) {
+                  if (fileExists(drivePaths[p])) {
+                    return { success: true, path: drivePaths[p] };
+                  }
+                }
+              }
+
+              return { success: true, path: "haoone.exe" }; // 最后尝试 PATH
+            }
+
             return { success: false, error: "haoone not found" };
           } catch(e) {
             return { success: false, error: e.toString() };
