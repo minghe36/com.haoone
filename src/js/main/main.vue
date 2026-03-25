@@ -1,13 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import {
-  csi,
-  evalES,
-  openLinkInBrowser,
-  subscribeBackgroundColor,
-  evalTS,
-} from "../lib/utils/bolt";
+import { csi, evalES, openLinkInBrowser, subscribeBackgroundColor } from "../lib/utils/bolt";
+import { child_process } from "../lib/cep/node";
 import "../index.scss";
+
+const { spawn } = child_process;
 
 const PLUGIN_NAME = "haoone AI 字幕";
 const VERSION = "9.0.0";
@@ -19,6 +16,17 @@ const LANGUAGE_OPTIONS = ["中文", "英文"];
 const MODEL_OPTIONS = [
   { name: "中英-2026", id: "Qwen3-ASR-0.6B" }
 ];
+
+// 语言映射
+const languageMap: Record<string, string> = {
+  "中文": "zh",
+  "英文": "en"
+};
+
+// 模型映射
+const modelMap: Record<string, string> = {
+  "中英-2026": "Qwen3-ASR-0.6B"
+};
 
 // UI 状态
 const backgroundColor = ref("#282c34");
@@ -40,7 +48,7 @@ const handleVisitWebsite = () => {
 };
 
 const handleRunSubtitle = async () => {
-  statusMessage.value = "正在导出音频...";
+  statusMessage.value = "导出音频中...";
   try {
     // 步骤1: 获取 homePath
     const step1 = await evalES(`
@@ -101,16 +109,186 @@ const handleRunSubtitle = async () => {
     }
 
     // 步骤4: 执行导出
-    statusMessage.value = "正在导出音频...";
+
+    // 生成输出文件名
+    const projectName = (await evalES('app.project.name || "project"', true))
+      .replace(/\.prproj$/, "")  // 去掉 .prproj 扩展名
+      .replace(/[<>:"/\\|?*]/g, "_");
+    const seqName = (await evalES('app.project.activeSequence.name || "sequence"', true)).replace(/[<>:"/\\|?*]/g, "_");
+    const outputFile = p1.homePath + "/haoone/plugin_data/" + projectName + "_" + seqName + ".wav";
+    const exportPresetPath = p1.homePath + "/haoone/plugin_data/config/haoone.epr";
 
     const result = await evalES(
-      'app.project.activeSequence.exportAsMediaDirect("/Users/xiewenhao/Documents/haoone/plugin_data/test.wav", "/Users/xiewenhao/Documents/haoone/plugin_data/config/haoone.epr", 0)',
+      'app.project.activeSequence.exportAsMediaDirect("' + outputFile + '", "' + exportPresetPath + '", 0)',
       true
     );
 
     if (result === "No Error" || result === 0) {
-      statusMessage.value = "导出成功";
-      srtPath.value = "/Users/xiewenhao/Documents/haoone/plugin_data/test.wav";
+      statusMessage.value = "音频导出完成";
+      srtPath.value = outputFile;
+
+      // 获取 hooone 程序路径
+      const step5a = await evalES(`
+        JSON.stringify((function() {
+          try {
+            var isWindows = $.os.indexOf("Windows") !== -1;
+            var DEBUG = true;
+
+            var fileExists = function(path) {
+              var f = new File(path);
+              return f.exists;
+            };
+
+            // macOS 路径
+            var macPaths = [
+              "/Applications/haoone.app/Contents/MacOS/haoone",
+              "/usr/local/bin/haoone",
+              "/opt/haoone/haoone"
+            ];
+
+            for (var m = 0; m < macPaths.length; m++) {
+              if (fileExists(macPaths[m])) {
+                return { success: true, path: macPaths[m] };
+              }
+            }
+
+            // 尝试用户本地 bin
+            var homePath = Folder("~").fsName;
+            if (homePath) {
+              var localBinPath = homePath + "/.local/bin/haoone";
+              if (fileExists(localBinPath)) {
+                return { success: true, path: localBinPath };
+              }
+            }
+
+            return { success: false, error: "haoone not found" };
+          } catch(e) {
+            return { success: false, error: e.toString() };
+          }
+        })())
+      `, true);
+
+      let p5a = JSON.parse(step5a);
+      if (!p5a.success) {
+        statusMessage.value = "失败: " + p5a.error;
+        return;
+      }
+
+      const haoonePath = p5a.path;
+
+      // 获取参数
+      const language = languageMap[selectedLanguage.value] || "zh";
+      const modelId = modelMap[selectedModel.value] || "Qwen3-ASR-0.6B";
+      const isAICorrection = enableAICorrection.value ? "true" : "false";
+      const isOnline = enableOnlineTranscript.value ? "true" : "false";
+      const maxLength = maxLineLength.value;
+
+      // 获取时间线名称
+      const timelineName = seqName;
+      statusMessage.value = "运行转录命令...";
+      // 构建命令
+      const hoooneCmd = '"' + haoonePath + '" timeline-transcribe' +
+        ' --timeline-name "' + timelineName + '"' +
+        ' --audio-file-path "' + outputFile.replace(/\\/g, "/") + '"' +
+        ' --language ' + language +
+        ' --enable-ai-correction ' + isAICorrection +
+        ' --enable-online-transcript ' + isOnline +
+        ' --max-subtitle-length ' + maxLength +
+        ' --model ' + modelId;
+
+      // 使用 Node.js 执行命令 - 实时显示进度
+      return new Promise((resolve, reject) => {
+        const args = hoooneCmd.split(' ').slice(1); // 去掉路径，只保留参数
+        const cmdPath = hoooneCmd.match(/^"([^"]+)"/)?.[1] || hoooneCmd.split(' ')[0].replace(/"/g, '');
+
+        // 清理参数中的引号
+        const cleanArgs = args.map(arg => arg.replace(/^"|"$/g, ''));
+
+        const proc = spawn(cmdPath, cleanArgs, {
+          shell: true,
+          encoding: 'utf8'
+        });
+
+        let output = "";
+        let lastProgress = "";
+        let errorMessage = "";
+
+        // 提取进度的统一函数
+        const processOutput = (str: string) => {
+          // 实时检查是否有错误
+          const errorMatch = str.match(/haoone_error=(.+?)(?:\n|$)/);
+          if (errorMatch && errorMatch[1]) {
+            errorMessage = errorMatch[1].trim();
+            statusMessage.value = "错误: " + errorMessage;
+          }
+
+          // 提取进度消息 (==== 和 ==== 之间的内容)
+          const msgMatch = str.match(/====([\s\S]*?)====/);
+          if (msgMatch && msgMatch[1]) {
+            const lines = msgMatch[1].split(/\r?\n/);
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed && trimmed !== lastProgress) {
+                lastProgress = trimmed;
+                statusMessage.value = trimmed;
+              }
+            }
+          }
+        };
+
+        proc.stdout.on('data', (data) => {
+          const str = data.toString();
+          output += str;
+          processOutput(str);
+        });
+
+        proc.stderr.on('data', (data) => {
+          const str = data.toString();
+          output += str;
+          processOutput(str);
+        });
+
+        proc.on('close', (code) => {
+          // 解析输出结果
+          let srtFilePath = "";
+          let jsonFilePath = "";
+          let errorMessage = "";
+
+          // 提取 srt_file_path
+          const srtMatch = output.match(/srt_file_path=(.+?)(?:\n|$)/);
+          if (srtMatch && srtMatch[1]) {
+            srtFilePath = srtMatch[1].trim();
+          }
+
+          // 提取 json_file_path
+          const jsonMatch = output.match(/json_file_path=(.+?)(?:\n|$)/);
+          if (jsonMatch && jsonMatch[1]) {
+            jsonFilePath = jsonMatch[1].trim();
+          }
+
+          // 检查是否有错误
+          const errorMatch = output.match(/haoone_error=(.+?)(?:\n|$)/);
+          if (errorMatch && errorMatch[1]) {
+            errorMessage = errorMatch[1].trim();
+          }
+
+          if (errorMessage) {
+            statusMessage.value = "转录失败: " + errorMessage;
+          } else if (srtFilePath) {
+            statusMessage.value = "转录完成: " + srtFilePath;
+            srtPath.value = srtFilePath;
+          } else {
+            statusMessage.value = "转录完成";
+          }
+
+          resolve(null);
+        });
+
+        proc.on('error', (error) => {
+          statusMessage.value = "转录失败: " + error.message;
+          resolve(null);
+        });
+      });
     } else {
       statusMessage.value = "导出失败: " + result;
     }
