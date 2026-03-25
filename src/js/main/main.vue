@@ -38,6 +38,20 @@ const maxLineLength = ref("25");
 const statusMessage = ref("等待任务");
 const srtPath = ref("");
 
+// 将字符串转换为 Unicode 转义序列（用于 ExtendScript）
+const toUnicodeEscape = (str: string): string => {
+  return str.replace(/[\u0080-\uffff]/g, (c) => {
+    return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4);
+  });
+};
+
+// 从 Unicode 转义序列还原字符串
+const fromUnicodeEscape = (str: string): string => {
+  return str.replace(/\\u([0-9a-fA-F]{4})/g, (match, hex) => {
+    return String.fromCharCode(parseInt(hex, 16));
+  });
+};
+
 // 根据是否启用远程转录来控制模型选择器的显示
 const showModelSelector = computed(() => !enableOnlineTranscript.value);
 
@@ -45,6 +59,13 @@ import { computed } from "vue";
 
 const handleVisitWebsite = () => {
   openLinkInBrowser("https://guide.haoai.pro/guide");
+};
+
+const handleOpenSrtDirectory = () => {
+  if (!srtPath.value) return;
+  // 获取字幕文件所在目录路径
+  const srtDir = srtPath.value.substring(0, srtPath.value.lastIndexOf("/"));
+  openLinkInBrowser("file://" + srtDir);
 };
 
 const handleRunSubtitle = async () => {
@@ -125,7 +146,6 @@ const handleRunSubtitle = async () => {
 
     if (result === "No Error" || result === 0) {
       statusMessage.value = "音频导出完成";
-      srtPath.value = outputFile;
 
       // 获取 hooone 程序路径
       const step5a = await evalES(`
@@ -318,11 +338,11 @@ const handleRunSubtitle = async () => {
             statusMessage.value = "转录失败: " + errorMessage;
           } else if (srtFilePath) {
             // 转录完成，现在导入字幕到时间线
-            statusMessage.value = "正在导入字幕到时间线...";
+            statusMessage.value = "正在导入字幕到项目面板...";
 
             (async () => {
               try {
-                // 步骤6: 使用 importFiles 导入 SRT 到时间线
+                // 步骤6: 使用 importFiles 导入 SRT 到项目面板
                 const step6 = await evalES(`
                   JSON.stringify((function() {
                     try {
@@ -333,7 +353,7 @@ const handleRunSubtitle = async () => {
                       var srtFile = new File(srtPath);
                       if (!srtFile.exists) return { success: false, error: "SRT file not found" };
 
-                      // 使用 importFiles 导入 SRT
+                      // 使用 importFiles 导入 SRT 到项目面板
                       var filesToImport = [srtPath];
                       app.project.importFiles(
                         filesToImport,
@@ -342,14 +362,7 @@ const handleRunSubtitle = async () => {
                         false
                       );
 
-                      // 获取刚导入的项目项
-                      var srtItem = app.project.rootItem.children[app.project.rootItem.children.numItems - 1];
-                      if (!srtItem) return { success: false, error: "Failed to get imported item" };
-
-                      // 放入时间线
-                      activeSeq.videoTracks[0].insertClip(srtItem, 0);
-
-                      return { success: true, message: "SRT imported to timeline" };
+                      return { success: true, message: "SRT imported to project" };
                     } catch(e) {
                       return { success: false, error: e.toString() };
                     }
@@ -358,11 +371,43 @@ const handleRunSubtitle = async () => {
 
                 let p6 = JSON.parse(step6);
                 if (p6.success) {
-                  statusMessage.value = "字幕已经导入项目面板，请手动添加到时间线";
+                  statusMessage.value = "字幕已导入项目面板，请手动添加到时间线";
                 } else {
                   statusMessage.value = "导入失败: " + p6.error + "，但字幕文件已生成: " + srtFilePath;
                 }
                 srtPath.value = srtFilePath;
+
+                // 保存 srt 路径到 pr-plugin.json
+                await evalES(`
+                  (function() {
+                    try {
+                      // 获取用户目录
+                      var homePath = "";
+                      if ($.os.indexOf("Windows") !== -1) {
+                        homePath = Folder.userData.fsName.replace(/\\\\Roaming$/, "");
+                      } else {
+                        homePath = Folder("~/Documents").fsName;
+                      }
+                      var configPath = homePath + "/haoone/plugin_data/config/pr-plugin.json";
+                      var projectName = "${toUnicodeEscape(projectName)}";
+                      var timelineName = "${toUnicodeEscape(timelineName)}";
+                      var srtFilePathValue = "${toUnicodeEscape(srtFilePath.replace(/\\/g, '\\\\'))}";
+                      var f = new File(configPath);
+                      if (f.exists) {
+                        f.open("r");
+                        var content = f.read();
+                        f.close();
+                        var config = JSON.parse(content);
+                        config[projectName + "_" + timelineName] = srtFilePathValue;
+                        f.open("w");
+                        f.write(JSON.stringify(config, null, 2));
+                        f.close();
+                      }
+                    } catch(e) {
+                      // 静默处理错误
+                    }
+                  })()
+                `, true);
               } catch (e: any) {
                 statusMessage.value = "导入失败: " + (e?.message || String(e)) + "，但字幕文件已生成: " + srtFilePath;
                 srtPath.value = srtFilePath;
@@ -393,9 +438,83 @@ const handleSyncSubtitle = () => {
   statusMessage.value = "正在同步字幕...";
 };
 
-onMounted(() => {
+onMounted(async () => {
   if (window.cep) {
     subscribeBackgroundColor((c: string) => (backgroundColor.value = c));
+  }
+
+  // 首次打开时创建配置文件
+  const defaultConfig = {
+    "enable-online-transcript": true,
+    "max-subtitle-length": 25,
+    "enable-ai-correction": false
+  };
+
+  // 使用 evalES 检查并创建配置文件，并读取 srt 路径
+  const initResult = await evalES(`
+    (async function() {
+      try {
+        // 获取用户目录
+        var homePath = "";
+        if ($.os.indexOf("Windows") !== -1) {
+          homePath = Folder.userData.fsName.replace(/\\\\Roaming$/, "");
+        } else {
+          homePath = Folder("~/Documents").fsName;
+        }
+
+        var configDir = homePath + "/haoone/plugin_data/config";
+        var configPath = configDir + "/pr-plugin.json";
+        var defaultConfig = ${JSON.stringify(JSON.stringify(defaultConfig))};
+
+        var f = new File(configPath);
+        if (!f.exists) {
+          // 创建目录
+          var folder = new Folder(configDir);
+          if (!folder.exists) {
+            folder.create();
+          }
+          // 写入配置文件
+          var writeFile = new File(configPath);
+          writeFile.open("w");
+          writeFile.write(defaultConfig);
+          writeFile.close();
+          return { success: true, srtPath: "" };
+        } else {
+          // 读取配置文件
+          f.open("r");
+          var content = f.read();
+          f.close();
+          var config = JSON.parse(content);
+
+          // 获取当前项目名和时间线名
+          var projectName = "";
+          var timelineName = "";
+          try {
+            projectName = app.project.name.replace(/\\.prproj$/, "").replace(/[<>:"/\\\\|?*]/g, "_");
+          } catch(e) {}
+          try {
+            timelineName = app.project.activeSequence.name.replace(/[<>:"/\\\\|?*]/g, "_");
+          } catch(e) {}
+
+          // 查找对应的 srt 路径
+          var key = projectName + "_" + timelineName;
+          var srtPath = config[key] || "";
+
+          return { success: true, srtPath: srtPath, projectName: projectName, timelineName: timelineName };
+        }
+      } catch(e) {
+        return { success: false, error: e.toString(), srtPath: "" };
+      }
+    })()
+  `, true);
+
+  try {
+    const result = JSON.parse(initResult);
+    if (result.success && result.srtPath) {
+      srtPath.value = result.srtPath;
+    }
+  } catch (e) {
+    // 静默处理解析错误
   }
 });
 </script>
@@ -458,6 +577,8 @@ onMounted(() => {
           class="checkbox"
           v-model="enableAICorrection"
         />
+      </div>
+      <div class="form-row">
         <label class="form-label max-length-label">单行字幕最大长度</label>
         <input
           type="text"
@@ -483,14 +604,15 @@ onMounted(() => {
 
       <!-- SRT路径显示 -->
       <div class="form-row srt-path-row">
-        <label class="form-label">SRT路径</label>
-        <input
-          type="text"
-          class="input-path"
-          v-model="srtPath"
-          readonly
-          placeholder="自动生成后显示路径"
-        />
+        <label class="form-label">字幕文件路径</label>
+        <div class="srt-path-display">{{ srtPath || '' }}</div>
+        <button
+          class="btn btn-small"
+          @click="handleOpenSrtDirectory"
+          :disabled="!srtPath"
+        >
+          打开目录
+        </button>
       </div>
     </div>
   </div>

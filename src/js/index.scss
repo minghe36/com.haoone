@@ -20,14 +20,13 @@ code {
 
 .app {
   min-height: 100vh;
-  padding: 16px;
   background-color: #282c34;
 }
 
 .haoone-container {
   max-width: 600px;
   margin: 0 auto;
-  padding: 16px;
+  padding: 10px;
 }
 
 // 标题栏
@@ -98,9 +97,46 @@ code {
 
   &.srt-path-row {
     margin-top: 8px;
+    flex-wrap: wrap;
 
     .form-label {
       min-width: 60px;
+    }
+
+    .srt-path-display {
+      flex: 1;
+      padding: 4px 8px;
+      font-size: 12px;
+      color: $font;
+      word-break: break-all;
+      min-width: 200px;
+
+      &:empty::before {
+        content: "自动生成后显示路径";
+        color: $highlight;
+      }
+    }
+
+    .btn-small {
+      padding: 4px 12px;
+      font-size: 12px;
+      border: none;
+      border-radius: 4px;
+      color: white;
+      cursor: pointer;
+      background-color: #7287fd;
+      margin-left: 8px;
+      transition: background-color 0.2s;
+
+      &:hover:not(:disabled) {
+        background-color: #7e91f8;
+      }
+
+      &:disabled {
+        background-color: #555;
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
     }
   }
 }
@@ -183,32 +219,29 @@ code {
   margin: 12px 0;
 
   .btn {
-    padding: 8px 16px;
+    padding: 8px;
     font-size: 14px;
     border: none;
-    border-radius: 6px;
+    border-radius: 4px;
     color: white;
     cursor: pointer;
-    min-width: 130px;
+    min-width: 100px;
     transition: background-color 0.2s;
-
-    &:hover {
-      opacity: 0.9;
-    }
+    font-weight: bold;
 
     &:active {
       transform: scale(0.98);
     }
 
     &.btn-primary {
-      background-color: #8e5ece;
+      background-color:  #8839ef; 
 
       &:hover {
-        background-color: #7a4eb5;
+        background-color: #8e5ece;
       }
 
       &:active {
-        background-color: #6a3e9f;
+        background-color: #8e5ece;
       }
     }
 
@@ -225,14 +258,14 @@ code {
     }
 
     &.btn-info {
-      background-color: #4a90a4;
+      background-color: #7287fd;
 
       &:hover {
-        background-color: #3a7a94;
+        background-color: #7e91f8;
       }
 
       &:active {
-        background-color: #2a6a84;
+        background-color: #7e91f8;
       }
     }
   }
