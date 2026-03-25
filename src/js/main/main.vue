@@ -275,8 +275,57 @@ const handleRunSubtitle = async () => {
           if (errorMessage) {
             statusMessage.value = "转录失败: " + errorMessage;
           } else if (srtFilePath) {
-            statusMessage.value = "转录完成: " + srtFilePath;
-            srtPath.value = srtFilePath;
+            // 转录完成，现在导入字幕到时间线
+            statusMessage.value = "正在导入字幕到时间线...";
+
+            (async () => {
+              try {
+                // 步骤6: 使用 importFiles 导入 SRT 到时间线
+                const step6 = await evalES(`
+                  JSON.stringify((function() {
+                    try {
+                      var srtPath = "${srtFilePath.replace(/\\/g, '\\\\')}";
+                      var activeSeq = app.project.activeSequence;
+                      if (!activeSeq) return { success: false, error: "No active sequence" };
+
+                      var srtFile = new File(srtPath);
+                      if (!srtFile.exists) return { success: false, error: "SRT file not found" };
+
+                      // 使用 importFiles 导入 SRT
+                      var filesToImport = [srtPath];
+                      app.project.importFiles(
+                        filesToImport,
+                        false,
+                        app.project.getInsertionBin(),
+                        false
+                      );
+
+                      // 获取刚导入的项目项
+                      var srtItem = app.project.rootItem.children[app.project.rootItem.children.numItems - 1];
+                      if (!srtItem) return { success: false, error: "Failed to get imported item" };
+
+                      // 放入时间线
+                      activeSeq.videoTracks[0].insertClip(srtItem, 0);
+
+                      return { success: true, message: "SRT imported to timeline" };
+                    } catch(e) {
+                      return { success: false, error: e.toString() };
+                    }
+                  })())
+                `, true);
+
+                let p6 = JSON.parse(step6);
+                if (p6.success) {
+                  statusMessage.value = "字幕已经导入项目面板，请手动添加到时间线";
+                } else {
+                  statusMessage.value = "导入失败: " + p6.error + "，但字幕文件已生成: " + srtFilePath;
+                }
+                srtPath.value = srtFilePath;
+              } catch (e: any) {
+                statusMessage.value = "导入失败: " + (e?.message || String(e)) + "，但字幕文件已生成: " + srtFilePath;
+                srtPath.value = srtFilePath;
+              }
+            })();
           } else {
             statusMessage.value = "转录完成";
           }
@@ -300,17 +349,6 @@ const handleRunSubtitle = async () => {
 
 const handleSyncSubtitle = () => {
   statusMessage.value = "正在同步字幕...";
-};
-
-// 测试调用 ExtendScript
-const testExtendScript = () => {
-  evalTS("testExtendScript").then((res) => {
-    console.log("ExtendScript 返回:", res);
-    statusMessage.value = `ExtendScript 测试成功: ${res}`;
-  }).catch((e) => {
-    console.error("ExtendScript 错误:", e);
-    statusMessage.value = `ExtendScript 错误: ${e}`;
-  });
 };
 
 onMounted(() => {
@@ -398,9 +436,6 @@ onMounted(() => {
         </button>
         <button class="btn btn-info" @click="handleSyncSubtitle">
           同步字幕
-        </button>
-        <button class="btn btn-warning" @click="testExtendScript">
-          测试 ExtendScript
         </button>
       </div>
 
