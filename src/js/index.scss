@@ -269,6 +269,14 @@ code {
       }
     }
   }
+
+  .sync-hint {
+    display: flex;
+    align-items: center;
+    font-size: 14px;
+    color: #fff;
+    padding: 0 4px;
+  }
 }
 
 // 滚动条

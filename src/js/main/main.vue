@@ -1,10 +1,41 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { csi, evalES, openLinkInBrowser, subscribeBackgroundColor } from "../lib/utils/bolt";
-import { child_process } from "../lib/cep/node";
+import { child_process, os, path } from "../lib/cep/node";
 import "../index.scss";
 
 const { spawn } = child_process;
+const fs = require("fs");
+
+// 获取用户文档目录路径 (Node.js)
+const getUserDocsPath = (): string => {
+  return os.homedir() + "/Documents";
+};
+
+// 使用 Node.js 查找 haoone 程序路径
+const findHaoonePath = (): string => {
+  const isWindows = process.platform === "win32";
+  const home = os.homedir();
+
+  const paths: string[] = isWindows
+    ? [
+        // 优先使用环境变量获取路径
+        process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, "haoone", "haoone.exe"),
+        process.env["PROGRAMFILES(X86)"] && path.join(process.env["PROGRAMFILES(X86)"], "haoone", "haoone.exe"),
+        process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "haoone", "haoone.exe"),
+        // 兜底硬编码路径
+        "C:\\Program Files\\haoone\\haoone.exe",
+        path.join(home, "AppData", "Local", "haoone", "haoone.exe")
+      ].filter(Boolean) as string[]
+    : [
+        "/Applications/haoone.app/Contents/MacOS/haoone",
+        "/usr/local/bin/haoone",
+        "/opt/haoone/haoone",
+        path.join(home, ".local/bin/haoone"),
+      ];
+
+  return paths.find(p => fs.existsSync(p)) || "";
+};
 
 const PLUGIN_NAME = "haoone AI 字幕";
 const VERSION = "9.0.0";
@@ -71,61 +102,21 @@ const handleOpenSrtDirectory = () => {
 const handleRunSubtitle = async () => {
   statusMessage.value = "导出音频中...";
   try {
-    // 步骤1: 获取 homePath
-    const step1 = await evalES(`
-      JSON.stringify((function() {
-        try {
-          var homePath = "";
-          if ($.os.indexOf("Windows") !== -1) {
-            homePath = Folder.userData.fsName.replace(/\\\\Roaming$/, "");
-          } else {
-            homePath = Folder("~/Documents").fsName;
-          }
-          return { success: true, homePath: homePath };
-        } catch(e) {
-          return { success: false, error: e.toString() };
-        }
-      })())
-    `, true);
-    let p1 = JSON.parse(step1);
-    if (!p1.success) {
-      statusMessage.value = "失败: " + p1.error;
-      return;
-    }
+    // 步骤1: 获取 Documents 路径
+    // 步骤1: 使用 Node.js 获取 Documents 路径
+    const homePath = getUserDocsPath();
 
-    // 步骤2: 检查预设文件
-    const presetPath = p1.homePath + "/haoone/plugin_data/config/haoone.epr";
-    const step2 = await evalES(`
-      JSON.stringify((function() {
-        try {
-          var f = new File("${presetPath.replace(/\\/g, '\\\\')}");
-          return { success: true, exists: f.exists, path: f.fsName };
-        } catch(e) {
-          return { success: false, error: e.toString() };
-        }
-      })())
-    `, true);
-    let p2 = JSON.parse(step2);
-    if (!p2.exists) {
+    // 步骤2: 检查预设文件是否存在 (使用 Node.js)
+    const presetPath = homePath + "/haoone/plugin_data/config/haoone.epr";
+    if (!fs.existsSync(presetPath)) {
       statusMessage.value = "预设文件不存在: " + presetPath;
       return;
     }
 
-    // 步骤3: 检查序列
-    const step3 = await evalES(`
-      JSON.stringify((function() {
-        try {
-          var seq = app.project.activeSequence;
-          if (!seq) return { success: false, error: "No active sequence" };
-          return { success: true, seqName: seq.name };
-        } catch(e) {
-          return { success: false, error: e.toString() };
-        }
-      })())
-    `, true);
-    let p3 = JSON.parse(step3);
-    if (!p3.success) {
-      statusMessage.value = "失败: " + p3.error;
+    // 步骤3: 检查序列 (使用简化版本)
+    const step3 = await evalES('app.project.activeSequence ? app.project.activeSequence.name : ""', true);
+    if (!step3 || step3 === "undefined" || step3 === "") {
+      statusMessage.value = "没有活动的序列";
       return;
     }
 
@@ -136,8 +127,8 @@ const handleRunSubtitle = async () => {
       .replace(/\.prproj$/, "")  // 去掉 .prproj 扩展名
       .replace(/[<>:"/\\|?*]/g, "_");
     const seqName = (await evalES('app.project.activeSequence.name || "sequence"', true)).replace(/[<>:"/\\|?*]/g, "_");
-    const outputFile = p1.homePath + "/haoone/plugin_data/" + projectName + "_" + seqName + ".wav";
-    const exportPresetPath = p1.homePath + "/haoone/plugin_data/config/haoone.epr";
+    const outputFile = homePath + "/haoone/plugin_data/" + projectName + "_" + seqName + ".wav";
+    const exportPresetPath = homePath + "/haoone/plugin_data/config/haoone.epr";
 
     const result = await evalES(
       'app.project.activeSequence.exportAsMediaDirect("' + outputFile + '", "' + exportPresetPath + '", 0)',
@@ -147,96 +138,12 @@ const handleRunSubtitle = async () => {
     if (result === "No Error" || result === 0) {
       statusMessage.value = "音频导出完成";
 
-      // 获取 hooone 程序路径
-      const step5a = await evalES(`
-        JSON.stringify((function() {
-          try {
-            var isWindows = $.os.indexOf("Windows") !== -1;
-            var DEBUG = true;
-
-            var fileExists = function(path) {
-              var f = new File(path);
-              return f.exists;
-            };
-
-            // macOS 路径
-            var macPaths = [
-              "/Applications/haoone.app/Contents/MacOS/haoone",
-              "/usr/local/bin/haoone",
-              "/opt/haoone/haoone"
-            ];
-
-            for (var m = 0; m < macPaths.length; m++) {
-              if (fileExists(macPaths[m])) {
-                return { success: true, path: macPaths[m] };
-              }
-            }
-
-            // 尝试用户本地 bin
-            var homePath = Folder("~").fsName;
-            if (homePath) {
-              var localBinPath = homePath + "/.local/bin/haoone";
-              if (fileExists(localBinPath)) {
-                return { success: true, path: localBinPath };
-              }
-            }
-
-            // Windows 路径检测
-            if (isWindows) {
-              // Windows 常见安装路径
-              var windowsPaths = [
-                "C:\\Program Files\\haoone\\haoone.exe",
-                "C:\\Program Files (x86)\\haoone\\haoone.exe"
-              ];
-
-              // 尝试常见路径
-              for (var i = 0; i < windowsPaths.length; i++) {
-                if (fileExists(windowsPaths[i])) {
-                  return { success: true, path: windowsPaths[i] };
-                }
-              }
-
-              // 尝试从 LOCALAPPDATA 获取
-              var localAppData = Folder("").fsName;
-              if (localAppData) {
-                var appDataPath = localAppData + "\\haoone\\haoone.exe";
-                if (fileExists(appDataPath)) {
-                  return { success: true, path: appDataPath };
-                }
-              }
-
-              // 遍历所有盘符查找
-              var drives = ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"];
-              for (var d = 0; d < drives.length; d++) {
-                var drivePaths = [
-                  drives[d] + ":\\Program Files\\haoone\\haoone.exe",
-                  drives[d] + ":\\Program Files (x86)\\haoone\\haoone.exe",
-                  drives[d] + ":\\haoone\\haoone.exe"
-                ];
-                for (var p = 0; p < drivePaths.length; p++) {
-                  if (fileExists(drivePaths[p])) {
-                    return { success: true, path: drivePaths[p] };
-                  }
-                }
-              }
-
-              return { success: true, path: "haoone.exe" }; // 最后尝试 PATH
-            }
-
-            return { success: false, error: "haoone not found" };
-          } catch(e) {
-            return { success: false, error: e.toString() };
-          }
-        })())
-      `, true);
-
-      let p5a = JSON.parse(step5a);
-      if (!p5a.success) {
-        statusMessage.value = "失败: " + p5a.error;
+      // 获取 hooone 程序路径 - 简化版本
+      const haoonePath = findHaoonePath();
+      if (!haoonePath) {
+        statusMessage.value = "未找到 haoone 程序";
         return;
       }
-
-      const haoonePath = p5a.path;
 
       // 获取参数
       const language = languageMap[selectedLanguage.value] || "zh";
@@ -310,7 +217,7 @@ const handleRunSubtitle = async () => {
           processOutput(str);
         });
 
-        proc.on('close', (code) => {
+        proc.on('close', async (code) => {
           // 解析输出结果
           let srtFilePath = "";
           let jsonFilePath = "";
@@ -337,82 +244,56 @@ const handleRunSubtitle = async () => {
           if (errorMessage) {
             statusMessage.value = "转录失败: " + errorMessage;
           } else if (srtFilePath) {
-            // 转录完成，现在导入字幕到时间线
+            // 转录完成，导入字幕到项目面板
             statusMessage.value = "正在导入字幕到项目面板...";
+            srtPath.value = srtFilePath;
 
-            (async () => {
-              try {
-                // 步骤6: 使用 importFiles 导入 SRT 到项目面板
-                const step6 = await evalES(`
-                  JSON.stringify((function() {
-                    try {
-                      var srtPath = "${srtFilePath.replace(/\\/g, '\\\\')}";
-                      var activeSeq = app.project.activeSequence;
-                      if (!activeSeq) return { success: false, error: "No active sequence" };
+            // 保存配置到 pr-plugin.json
+            try {
+              const userDocsPath = getUserDocsPath();
+              const configDir = userDocsPath + "/haoone/plugin_data/config";
+              const configPath = configDir + "/pr-plugin.json";
 
-                      var srtFile = new File(srtPath);
-                      if (!srtFile.exists) return { success: false, error: "SRT file not found" };
-
-                      // 使用 importFiles 导入 SRT 到项目面板
-                      var filesToImport = [srtPath];
-                      app.project.importFiles(
-                        filesToImport,
-                        false,
-                        app.project.getInsertionBin(),
-                        false
-                      );
-
-                      return { success: true, message: "SRT imported to project" };
-                    } catch(e) {
-                      return { success: false, error: e.toString() };
-                    }
-                  })())
-                `, true);
-
-                let p6 = JSON.parse(step6);
-                if (p6.success) {
-                  statusMessage.value = "字幕已导入项目面板，请手动添加到时间线";
-                } else {
-                  statusMessage.value = "导入失败: " + p6.error + "，但字幕文件已生成: " + srtFilePath;
-                }
-                srtPath.value = srtFilePath;
-
-                // 保存 srt 路径到 pr-plugin.json
-                await evalES(`
-                  (function() {
-                    try {
-                      // 获取用户目录
-                      var homePath = "";
-                      if ($.os.indexOf("Windows") !== -1) {
-                        homePath = Folder.userData.fsName.replace(/\\\\Roaming$/, "");
-                      } else {
-                        homePath = Folder("~/Documents").fsName;
-                      }
-                      var configPath = homePath + "/haoone/plugin_data/config/pr-plugin.json";
-                      var projectName = "${toUnicodeEscape(projectName)}";
-                      var timelineName = "${toUnicodeEscape(timelineName)}";
-                      var srtFilePathValue = "${toUnicodeEscape(srtFilePath.replace(/\\/g, '\\\\'))}";
-                      var f = new File(configPath);
-                      if (f.exists) {
-                        f.open("r");
-                        var content = f.read();
-                        f.close();
-                        var config = JSON.parse(content);
-                        config[projectName + "_" + timelineName] = srtFilePathValue;
-                        f.open("w");
-                        f.write(JSON.stringify(config, null, 2));
-                        f.close();
-                      }
-                    } catch(e) {
-                      // 静默处理错误
-                    }
-                  })()
-                `, true);
-              } catch (e: any) {
-                statusMessage.value = "导入失败: " + (e?.message || String(e)) + "，但字幕文件已生成: " + srtFilePath;
-                srtPath.value = srtFilePath;
+              // 确保目录存在
+              if (!fs.existsSync(configDir)) {
+                fs.mkdirSync(configDir, { recursive: true });
               }
-            })();
+
+              // 读取或创建配置
+              let config: Record<string, any> = {};
+              if (fs.existsSync(configPath)) {
+                try {
+                  config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+                } catch (e) {
+                  config = {};
+                }
+              }
+
+              // 保存项目名_时间线名 -> srt路径
+              const key = projectName + "_" + seqName;
+              config[key] = srtFilePath;
+
+              // 保存全局配置
+              config["enable-online-transcript"] = enableOnlineTranscript.value;
+              config["max-subtitle-length"] = parseInt(maxLineLength.value) || 25;
+              config["enable-ai-correction"] = enableAICorrection.value;
+
+              fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+            } catch (e) {
+              // 忽略保存错误
+            }
+
+            // 导入 SRT 到项目面板
+            const importResult = await evalES(
+              'var f = new File("' + srtFilePath.replace(/\\/g, '\\\\') + '"); if (f.exists) { app.project.importFiles(["' + srtFilePath.replace(/\\/g, '\\\\') + '"], false, app.project.getInsertionBin(), false); "success"; } else { "file not found"; }',
+              true
+            );
+
+            if (importResult === "success") {
+              statusMessage.value = "字幕已导入项目面板，请手动添加到时间线";
+            } else {
+              statusMessage.value = "导入失败: " + importResult + "，但字幕文件已生成: " + srtFilePath;
+            }
           } else {
             statusMessage.value = "转录完成";
           }
@@ -434,87 +315,127 @@ const handleRunSubtitle = async () => {
   }
 };
 
-const handleSyncSubtitle = () => {
+const handleSyncSubtitle = async () => {
+  if (!srtPath.value) {
+    statusMessage.value = "没有可同步的字幕文件";
+    return;
+  }
+
   statusMessage.value = "正在同步字幕...";
+
+  try {
+    const oldPath = srtPath.value;
+    const oldExt = path.extname(oldPath);
+    const oldDir = path.dirname(oldPath);
+    const oldNameWithoutExt = path.basename(oldPath, oldExt);
+
+    // 检查文件名中是否有数字结尾
+    const match = oldNameWithoutExt.match(/_(\d+)$/);
+    let newName;
+
+    if (match) {
+      // 数字加1
+      const num = parseInt(match[1]) + 1;
+      newName = oldNameWithoutExt.replace(/_(\d+)$/, "_" + num) + oldExt;
+    } else {
+      // 添加 _1
+      newName = oldNameWithoutExt + "_1" + oldExt;
+    }
+
+    const newPath = path.join(oldDir, newName);
+
+    // 复制文件
+    fs.copyFileSync(oldPath, newPath);
+
+    // 更新 srtPath 显示
+    srtPath.value = newPath;
+
+    // 保存新路径到配置
+    const userDocsPath = getUserDocsPath();
+    const configDir = userDocsPath + "/haoone/plugin_data/config";
+    const configPath = configDir + "/pr-plugin.json";
+
+    // 获取项目名和时间线名
+    const nameResult = await evalES(
+      'var p = app.project; var s = app.project.activeSequence; (p ? p.name : "") + "|" + (s ? s.name : "")',
+      true
+    );
+    const parts = nameResult.split("|");
+    const projectName = (parts[0] || "").replace(/\.prproj$/, "").replace(/[<>:"/|?*]/g, "_");
+    const seqName = (parts[1] || "").replace(/[<>:"/|?*]/g, "_");
+
+    // 更新配置
+    try {
+      let config: Record<string, any> = {};
+      if (fs.existsSync(configPath)) {
+        try {
+          config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+        } catch (e) {}
+      }
+      const key = projectName + "_" + seqName;
+      config[key] = newPath;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (e) {}
+
+    // 导入到 PR 项目面板
+    const importResult = await evalES(
+      'var f = new File("' + newPath.replace(/\\/g, '\\\\') + '"); if (f.exists) { app.project.importFiles(["' + newPath.replace(/\\/g, '\\\\') + '"], false, app.project.getInsertionBin(), false); "success"; } else { "file not found"; }',
+      true
+    );
+
+    if (importResult === "success") {
+      statusMessage.value = "新的 srt 文件已经导入项目面板，文件名: " + newName;
+    } else {
+      statusMessage.value = "同步完成但导入失败: " + importResult;
+    }
+  } catch (error: any) {
+    statusMessage.value = "同步失败: " + (error?.message || String(error));
+  }
 };
 
 onMounted(async () => {
   if (window.cep) {
     subscribeBackgroundColor((c: string) => (backgroundColor.value = c));
-  }
 
-  // 首次打开时创建配置文件
-  const defaultConfig = {
-    "enable-online-transcript": true,
-    "max-subtitle-length": 25,
-    "enable-ai-correction": false
-  };
+    // 读取配置文件
+    const userDocsPath = getUserDocsPath();
+    const configPath = userDocsPath + "/haoone/plugin_data/config/pr-plugin.json";
 
-  // 使用 evalES 检查并创建配置文件，并读取 srt 路径
-  const initResult = await evalES(`
-    (async function() {
-      try {
-        // 获取用户目录
-        var homePath = "";
-        if ($.os.indexOf("Windows") !== -1) {
-          homePath = Folder.userData.fsName.replace(/\\\\Roaming$/, "");
-        } else {
-          homePath = Folder("~/Documents").fsName;
+    try {
+      if (fs.existsSync(configPath)) {
+        const content = fs.readFileSync(configPath, "utf8");
+        const config = JSON.parse(content);
+
+        // 获取项目名和时间线名
+        const nameResult = await evalES(
+          'var p = app.project; var s = app.project.activeSequence; (p ? p.name : "") + "|" + (s ? s.name : "")',
+          true
+        );
+
+        const parts = nameResult.split("|");
+        const projectName = (parts[0] || "").replace(/\.prproj$/, "").replace(/[<>:"/|?*]/g, "_");
+        const seqName = (parts[1] || "").replace(/[<>:"/|?*]/g, "_");
+        const key = projectName + "_" + seqName;
+
+        // 如果有对应配置则读取
+        if (config[key]) {
+          srtPath.value = config[key];
         }
 
-        var configDir = homePath + "/haoone/plugin_data/config";
-        var configPath = configDir + "/pr-plugin.json";
-        var defaultConfig = ${JSON.stringify(JSON.stringify(defaultConfig))};
-
-        var f = new File(configPath);
-        if (!f.exists) {
-          // 创建目录
-          var folder = new Folder(configDir);
-          if (!folder.exists) {
-            folder.create();
-          }
-          // 写入配置文件
-          var writeFile = new File(configPath);
-          writeFile.open("w");
-          writeFile.write(defaultConfig);
-          writeFile.close();
-          return { success: true, srtPath: "" };
-        } else {
-          // 读取配置文件
-          f.open("r");
-          var content = f.read();
-          f.close();
-          var config = JSON.parse(content);
-
-          // 获取当前项目名和时间线名
-          var projectName = "";
-          var timelineName = "";
-          try {
-            projectName = app.project.name.replace(/\\.prproj$/, "").replace(/[<>:"/\\\\|?*]/g, "_");
-          } catch(e) {}
-          try {
-            timelineName = app.project.activeSequence.name.replace(/[<>:"/\\\\|?*]/g, "_");
-          } catch(e) {}
-
-          // 查找对应的 srt 路径
-          var key = projectName + "_" + timelineName;
-          var srtPath = config[key] || "";
-
-          return { success: true, srtPath: srtPath, projectName: projectName, timelineName: timelineName };
+        // 读取全局配置
+        if (config["enable-online-transcript"] !== undefined) {
+          enableOnlineTranscript.value = config["enable-online-transcript"];
         }
-      } catch(e) {
-        return { success: false, error: e.toString(), srtPath: "" };
+        if (config["max-subtitle-length"] !== undefined) {
+          maxLineLength.value = String(config["max-subtitle-length"]);
+        }
+        if (config["enable-ai-correction"] !== undefined) {
+          enableAICorrection.value = config["enable-ai-correction"];
+        }
       }
-    })()
-  `, true);
-
-  try {
-    const result = JSON.parse(initResult);
-    if (result.success && result.srtPath) {
-      srtPath.value = result.srtPath;
+    } catch (e) {
+      // 忽略错误
     }
-  } catch (e) {
-    // 静默处理解析错误
   }
 });
 </script>
@@ -524,7 +445,7 @@ onMounted(async () => {
     <div class="haoone-container">
       <!-- 标题栏 -->
       <div class="haoone-header">
-        <span class="plugin-name">{{ PLUGIN_NAME }} v{{ VERSION }}</span>
+        <span class="plugin-name">{{ PLUGIN_NAME }} by 浩叔 haoai.pro</span>
         <button class="help-btn" @click="handleVisitWebsite">
           使用帮助
         </button>
@@ -598,7 +519,7 @@ onMounted(async () => {
           生成字幕
         </button>
         <button class="btn btn-info" @click="handleSyncSubtitle">
-          同步字幕
+          同步haoone软件的字幕修改
         </button>
       </div>
 

@@ -22,16 +22,16 @@ const config: CEP_Config = {
   iconNormalRollOver: "./src/assets/dark-icon.png",
   parameters: ["--v=0", "--enable-nodejs", "--mixed-context"],
   width: 500,
-  height: 550,
+  height: 450,
 
   panels: [
     {
       mainPath: "./main/index.html",
       name: "main",
-      panelDisplayName: "haoone", 
+      panelDisplayName: "haoone",
       autoVisible: true,
       width: 600,
-      height: 650,
+      height: 500,
     },
   ],
   build: {
