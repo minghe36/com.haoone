@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "mcp__ide__getDiagnostics",
-      "Bash(npm run build)"
+      "Bash(npm run build)",
+      "Bash(powershell -Command \"Get-Process | Where-Object { $_ProcessName -like ''Adobe*'' } | Select-Object ProcessName, MainWindowHandle\")",
+      "Bash(powershell -Command \"Get-Process -Name Adobe* | Select-Object ProcessName,MainWindowHandle\")"
     ]
   }
 }

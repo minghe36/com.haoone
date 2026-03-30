@@ -204,7 +204,8 @@ const handleRunSubtitle = async () => {
 
         const proc = spawn(cmdPath, cleanArgs, {
           shell: true,
-          encoding: 'utf8'
+          encoding: 'utf8',
+          windowsHide: true
         });
 
         let output = "";
