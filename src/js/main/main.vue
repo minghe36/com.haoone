@@ -353,69 +353,18 @@ const handleSyncSubtitle = async () => {
   statusMessage.value = "正在同步字幕...";
 
   try {
-    const oldPath = srtPath.value;
-    const oldExt = path.extname(oldPath);
-    const oldDir = path.dirname(oldPath);
-    const oldNameWithoutExt = path.basename(oldPath, oldExt);
+    const srtFilePath = srtPath.value;
 
-    // 检查文件名中是否有数字结尾
-    const match = oldNameWithoutExt.match(/_(\d+)$/);
-    let newName;
-
-    if (match) {
-      // 数字加1
-      const num = parseInt(match[1]) + 1;
-      newName = oldNameWithoutExt.replace(/_(\d+)$/, "_" + num) + oldExt;
-    } else {
-      // 添加 _1
-      newName = oldNameWithoutExt + "_1" + oldExt;
-    }
-
-    const newPath = path.join(oldDir, newName);
-
-    // 复制文件
-    fs.copyFileSync(oldPath, newPath);
-
-    // 更新 srtPath 显示
-    srtPath.value = newPath;
-
-    // 保存新路径到配置
-    const userDocsPath = getUserDocsPath();
-    const configDir = path.join(userDocsPath, "haoone", "plugin_data", "config");
-    const configPath = path.join(configDir, "pr-plugin.json");
-
-    // 获取项目名和时间线名
-    const nameResult = await evalES(
-      'var p = app.project; var s = app.project.activeSequence; (p ? p.name : "") + "|" + (s ? s.name : "")',
-      true
-    );
-    const parts = nameResult.split("|");
-    const projectName = (parts[0] || "").replace(/\.prproj$/, "").replace(/[<>:"/|?*]/g, "_");
-    const seqName = (parts[1] || "").replace(/[<>:"/|?*]/g, "_");
-
-    // 更新配置
-    try {
-      let config: Record<string, any> = {};
-      if (fs.existsSync(configPath)) {
-        try {
-          config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-        } catch (e) {}
-      }
-      const key = projectName + "_" + seqName;
-      config[key] = newPath;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    } catch (e) {}
-
-    // 导入到 PR 项目面板
+    // 重新导入到 PR 项目面板（刷新字幕）
     const importResult = await evalES(
-      'var f = new File("' + newPath.replace(/\\/g, '\\\\') + '"); if (f.exists) { app.project.importFiles(["' + newPath.replace(/\\/g, '\\\\') + '"], false, app.project.getInsertionBin(), false); "success"; } else { "file not found"; }',
+      'var f = new File("' + srtFilePath.replace(/\\/g, '\\\\') + '"); if (f.exists) { app.project.importFiles(["' + srtFilePath.replace(/\\/g, '\\\\') + '"], false, app.project.getInsertionBin(), false); "success"; } else { "file not found"; }',
       true
     );
 
     if (importResult === "success") {
-      statusMessage.value = "新的 srt 文件已经导入项目面板，文件名: " + newName;
+      statusMessage.value = "字幕已同步到项目面板";
     } else {
-      statusMessage.value = "同步完成但导入失败: " + importResult;
+      statusMessage.value = "同步失败: " + importResult;
     }
   } catch (error: any) {
     statusMessage.value = "同步失败: " + (error?.message || String(error));
