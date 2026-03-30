@@ -9,32 +9,51 @@ const fs = require("fs");
 
 // 获取用户文档目录路径 (Node.js)
 const getUserDocsPath = (): string => {
-  return os.homedir() + "/Documents";
+  return path.join(os.homedir(), "Documents");
 };
 
 // 使用 Node.js 查找 haoone 程序路径
 const findHaoonePath = (): string => {
   const isWindows = process.platform === "win32";
-  const home = os.homedir();
 
-  const paths: string[] = isWindows
-    ? [
-        // 优先使用环境变量获取路径
-        process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, "haoone", "haoone.exe"),
-        process.env["PROGRAMFILES(X86)"] && path.join(process.env["PROGRAMFILES(X86)"], "haoone", "haoone.exe"),
-        process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "haoone", "haoone.exe"),
-        // 兜底硬编码路径
-        "C:\\Program Files\\haoone\\haoone.exe",
-        path.join(home, "AppData", "Local", "haoone", "haoone.exe")
-      ].filter(Boolean) as string[]
-    : [
-        "/Applications/haoone.app/Contents/MacOS/haoone",
-        "/usr/local/bin/haoone",
-        "/opt/haoone/haoone",
-        path.join(home, ".local/bin/haoone"),
+  if (isWindows) {
+    // Windows 下遍历所有盘符查找
+    const driveLetters = "CDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+    for (const drive of driveLetters) {
+      const drivePath = drive + ":\\";
+      const searchPaths = [
+        path.join(drivePath, "Program Files", "haoone", "haoone.exe"),
+        path.join(drivePath, "Program Files (x86)", "haoone", "haoone.exe"),
+        path.join(drivePath, "haoone", "haoone.exe"),
       ];
+      // 也检查用户目录下的安装
+      if (process.env.LOCALAPPDATA) {
+        searchPaths.push(path.join(process.env.LOCALAPPDATA, "haoone", "haoone.exe"));
+      }
+      if (process.env.APPDATA) {
+        searchPaths.push(path.join(process.env.APPDATA, "haoone", "haoone.exe"));
+      }
+      if (os.homedir()) {
+        searchPaths.push(path.join(os.homedir(), "AppData", "Local", "haoone", "haoone.exe"));
+        searchPaths.push(path.join(os.homedir(), "AppData", "Roaming", "haoone", "haoone.exe"));
+      }
+      for (const p of searchPaths) {
+        if (fs.existsSync(p)) return p;
+      }
+    }
+  } else {
+    // Mac/Linux 路径
+    const macPaths = [
+      "/Applications/haoone.app/Contents/MacOS/haoone",
+      "/usr/local/bin/haoone",
+      "/opt/haoone/haoone",
+      path.join(os.homedir(), ".local", "bin", "haoone"),
+    ];
+    const found = macPaths.find(p => fs.existsSync(p));
+    if (found) return found;
+  }
 
-  return paths.find(p => fs.existsSync(p)) || "";
+  return "";
 };
 
 const PLUGIN_NAME = "haoone AI 字幕";
@@ -105,9 +124,9 @@ const handleRunSubtitle = async () => {
     // 步骤1: 获取 Documents 路径
     // 步骤1: 使用 Node.js 获取 Documents 路径
     const homePath = getUserDocsPath();
-
     // 步骤2: 检查预设文件是否存在 (使用 Node.js)
-    const presetPath = homePath + "/haoone/plugin_data/config/haoone.epr";
+    const pluginDataDir = path.join(homePath, "haoone", "plugin_data");
+    const presetPath = path.join(pluginDataDir, "config", "haoone.epr");
     if (!fs.existsSync(presetPath)) {
       statusMessage.value = "预设文件不存在: " + presetPath;
       return;
@@ -127,11 +146,21 @@ const handleRunSubtitle = async () => {
       .replace(/\.prproj$/, "")  // 去掉 .prproj 扩展名
       .replace(/[<>:"/\\|?*]/g, "_");
     const seqName = (await evalES('app.project.activeSequence.name || "sequence"', true)).replace(/[<>:"/\\|?*]/g, "_");
-    const outputFile = homePath + "/haoone/plugin_data/" + projectName + "_" + seqName + ".wav";
-    const exportPresetPath = homePath + "/haoone/plugin_data/config/haoone.epr";
+    const outputFile = path.join(pluginDataDir, projectName + "_" + seqName + ".wav");
+    const exportPresetPath = path.join(pluginDataDir, "config", "haoone.epr");
+
+    // 确保输出目录存在
+    if (!fs.existsSync(pluginDataDir)) {
+      fs.mkdirSync(pluginDataDir, { recursive: true });
+    }
+
+    // Windows 路径需要转换：ExtendScript 中反斜杠需要双写或使用正斜杠
+    const isWindows = process.platform === "win32";
+    const outputFileForES = isWindows ? outputFile.replace(/\\/g, "\\\\") : outputFile;
+    const exportPresetPathForES = isWindows ? exportPresetPath.replace(/\\/g, "\\\\") : exportPresetPath;
 
     const result = await evalES(
-      'app.project.activeSequence.exportAsMediaDirect("' + outputFile + '", "' + exportPresetPath + '", 0)',
+      'app.project.activeSequence.exportAsMediaDirect("' + outputFileForES + '", "' + exportPresetPathForES + '", 0)',
       true
     );
 
@@ -251,8 +280,8 @@ const handleRunSubtitle = async () => {
             // 保存配置到 pr-plugin.json
             try {
               const userDocsPath = getUserDocsPath();
-              const configDir = userDocsPath + "/haoone/plugin_data/config";
-              const configPath = configDir + "/pr-plugin.json";
+              const configDir = path.join(userDocsPath, "haoone", "plugin_data", "config");
+              const configPath = path.join(configDir, "pr-plugin.json");
 
               // 确保目录存在
               if (!fs.existsSync(configDir)) {
@@ -352,8 +381,8 @@ const handleSyncSubtitle = async () => {
 
     // 保存新路径到配置
     const userDocsPath = getUserDocsPath();
-    const configDir = userDocsPath + "/haoone/plugin_data/config";
-    const configPath = configDir + "/pr-plugin.json";
+    const configDir = path.join(userDocsPath, "haoone", "plugin_data", "config");
+    const configPath = path.join(configDir, "pr-plugin.json");
 
     // 获取项目名和时间线名
     const nameResult = await evalES(
@@ -399,7 +428,7 @@ onMounted(async () => {
 
     // 读取配置文件
     const userDocsPath = getUserDocsPath();
-    const configPath = userDocsPath + "/haoone/plugin_data/config/pr-plugin.json";
+    const configPath = path.join(userDocsPath, "haoone", "plugin_data", "config", "pr-plugin.json");
 
     try {
       if (fs.existsSync(configPath)) {
